@@ -1,0 +1,674 @@
+//*************************************
+// SASS mixin to transform a color to another color
+// Creates a set of css filters, equals to target color
+// Based on this algorythm: https://stackoverflow.com/a/43960991
+//
+// Usage:
+//
+// *scss*
+// .css-rule {
+// 	background: red;
+// 	@include color-to-filter(@#ffcc00);
+// }
+//
+// Compiles to:
+//
+// *css*
+// css-rule {
+// 	background: red;
+// 	filter: brightness(0) saturate(100%) invert(84%) sepia(43%) saturate(3460%) hue-rotate(360deg) brightness(105%) contrast(102%);
+// }
+//
+// Displayed color will closely match #ffcc00;
+//
+// In case the algorithm doesn't produce a perfect result, a warning will be logged abd value won't be cached.
+// Recompile css to get another result.
+//*************************************
+
+@import "mathsass/dist/_math.scss";
+
+// Define global map to keep cached values
+$colorfilters: () !default;
+
+// HELPERS
+// Since modulo operartor (%) in JS and SASS work differently. these function is needed to calculate remainder, as JS would
+@function remainder($origin, $mod) {
+  $q: if($origin/$mod > 0, floor($origin/$mod), ceil($origin/$mod));
+
+  @return $origin - ($mod * $q);
+}
+
+// Round negative half up. By default Libsass willr round negative half down.
+// This function makes rounding result identical to JS.
+@function round-half-up($a) {
+  @return if($a - floor($a) < 0.5, floor($a), ceil($a));
+}
+
+/// Replace element in list
+/// @author Hugo Giraudel
+/// @param {List} $list - List to change
+/// @param {Number} $index - Index of value which needs to be changed
+/// @param {Any} $value - New value
+/// @return {List}
+
+@function replace-nth($list, $index, $value) {
+  $result: null;
+
+  @if type-of($index) != number {
+    @warn "$index: #{quote($index)} is not a number for `replace-nth`.";
+  } @else if $index == 0 {
+    @warn "List index 0 must be a non-zero integer for `replace-nth`.";
+  } @else if abs($index) > length($list) {
+    @warn "List index is #{$index} but list is only #{length($list)} item long for `replace-nth`.";
+  } @else {
+    $result: ();
+    $index: if($index < 0, length($list) + $index + 1, $index);
+
+    @for $i from 1 through length($list) {
+      @if $i == $index {
+        $result: append($result, $value);
+      } @else {
+        $result: append($result, nth($list, $i));
+      }
+    }
+  }
+
+  @return $result;
+}
+
+/// Insert an element into list
+/// @author Hugo Giraudel
+/// @param {List} $list - List to change
+/// @param {Number} $index - Index where the value should be inserted
+/// @param {Any} $value - Value to insert
+/// @return {List}
+@function insert-nth($list, $index, $value) {
+  $result: null;
+
+  @if type-of($index) != number {
+    @warn "$index: #{quote($index)} is not a number for `insert-nth`.";
+  } @else if $index < 1 {
+    @warn "List index 0 must be a non-zero integer for `insert-nth`";
+  } @else if $index > length($list) {
+    @warn "List index is #{$index} but list is only #{length($list)} item long for `insert-nth'.";
+  } @else {
+    $result: ();
+
+    @for $i from 1 through length($list) {
+      @if $i == $index {
+        $result: append($result, $value);
+      }
+
+      $result: append($result, nth($list, $i));
+    }
+  }
+
+  @return $result;
+}
+
+/// toFixed() function in Sass
+/// @author Hugo Giraudel
+/// @param {Number} $float - Number to format
+/// @param {Number} $digits [2] - Number of digits to leave
+/// @return {Number}
+
+@function to-fixed($float, $digits: 2) {
+  $sass-precision: 5;
+
+  @if $digits > $sass-precision {
+    @warn "Sass sets default precision to #{$sass-precision} digits, and there is no way to change that for now."
+			+ "The returned number will have #{$sass-precision} digits, even if you asked for `#{$digits}`."
+			+ "See https://github.com/sass/sass/issues/1122 for further informations.";
+  }
+
+  $pow: pow(10, $digits);
+
+  @return round-half-up($float * $pow) / $pow;
+}
+
+/// Map deep get
+/// @author Hugo Giraudel
+/// @param {Map} $map - Map
+/// @param {Arglist} $keys - Key chain
+/// @return {*} - Desired value
+@function map-deep-get($map, $keys...) {
+  @each $key in $keys {
+    $map: map-get($map, $key);
+  }
+
+  @return $map;
+}
+
+/// Clamp `$number` between `$min` and `$max`
+/// @author Hugo Giraudel
+/// @param {Number} $number - Number to clamp
+/// @param {Number} $min - Minimum value
+/// @param {Number} $max - Maximum value
+/// @return {Number}
+
+@function clamp($number, $min, $max) {
+  @return min(max($number, $min), $max);
+}
+
+/// Chunk - Chunk an array into sizable peices
+/// @author Hugo Giraudel
+/// @see https://hugogiraudel.com/2013/10/09/advanced-sass-list-functions-again/
+/// @param  {array}  $list   - The array to be split into chunks
+/// @param  {number} $size   - The size of the array chunks
+/// @return {array}          - The array split into chunks
+
+@function Chunk($list, $size) {
+  $result: ();
+  $n: ceil(length($list) / $size);
+  $temp-index: 0;
+
+  @for $i from 1 through $n {
+    $temp-list: ();
+
+    @for $j from 1 + $temp-index through $size + $temp-index {
+      @if $j <= length($list) {
+        $temp-list: append($temp-list, nth($list, $j));
+      }
+    }
+
+    $result: append($result, $temp-list);
+    $temp-index: $temp-index + $size;
+  }
+
+  @return $result;
+}
+//*************************************
+//
+// Color functions
+//
+//*************************************
+
+// Invert
+//
+// @author Ana Tudor
+// @see https://davidwalsh.name/invert-color-sass
+// @param {Number} $channel - channel value
+// @param {Number} $upper - Maximum possible value
+// @param {Number} $lower - Minimum possible value
+// @return {Number}
+@function invert-channel($channel, $upper, $lower) {
+  @return round(255 - ($lower + $channel * ($upper - $lower)/255));
+}
+
+// @author Ana Tudor
+// @see https://davidwalsh.name/invert-color-sass
+// @param {Color} $original - Original color
+// @param {Percentage} $percentage - Invert percentage
+// @return {Color}
+@function _invert($original, $percentage) {
+  $upper: ($percentage/100%) * 255;
+  $lower: 255 - $upper;
+  $alpha: alpha($original);
+
+  $inverted-channels: ();
+
+  @each $channel-name in "red" "green" "blue" {
+    $channel: call(get-function($channel-name), $original);
+    $inverted-channel: invert-channel($channel, $upper, $lower);
+    $inverted-channels: append($inverted-channels, $inverted-channel);
+  }
+
+  $inverted-channels: append($inverted-channels, $alpha);
+
+  @return rgba($inverted-channels...);
+}
+
+// ColorFilter - Run a matrix filter over a color variable and return the color
+// @author Alex Page
+// @see https://codepen.io/alex-page/pen/XZRyBL
+// @param  {string} $color   - The color to be manipulated by the filter
+// @param  {string} $filter  - The filter in a matrix; red, green, blue, alpha
+// @return {string}          - The manipulated color based on the filter
+@function ColorFilter($color, $filter) {
+  // RGBA values of the color
+  $colorRGBA: (
+    "red": red($color),
+    "green": green($color),
+    "blue": blue($color),
+    "alpha": alpha($color),
+  );
+
+  // Split the filter into groups of 5
+  $filterRGBA: Chunk($filter, 5);
+
+  // Create an empty map to fill with data
+  $filterResult: (
+    "red": 0,
+    "green": 0,
+    "blue": 0,
+    "alpha": 0,
+  );
+
+  $j: 1;
+
+  @each $filterGroup in $filterRGBA {
+    $i: 1;
+
+    @each $key in map-keys($colorRGBA) {
+      $rgbaValue: map-get($colorRGBA, $key);
+
+      $filterResult: map-merge(
+        $filterResult,
+        (
+          nth(map-keys($filterResult), $j):
+            nth(map-values($filterResult), $j) +
+            nth($filterGroup, $i) *
+            $rgbaValue,
+        )
+      );
+
+      $i: $i + 1;
+    }
+
+    $j: $j + 1;
+  }
+
+  @return rgba(
+    map-get($filterResult, "red"),
+    map-get($filterResult, "green"),
+    map-get($filterResult, "blue"),
+    map-get($filterResult, "alpha")
+  );
+}
+
+// Sepia
+//
+// Create matrix
+// @param {value} $value - amount of filter
+// @return {List} - matrix
+@function get-sepia-matrix($value) {
+  $value: strip-unit($value);
+
+  @return (
+    0.393 + 0.607 * (1 - $value),
+    0.769 - 0.769 * (1 - $value),
+    0.189 - 0.189 * (1 - $value),
+    0,
+    0,
+    0.349 - 0.349 * (1 - $value),
+    0.686 + 0.314 * (1 - $value),
+    0.168 - 0.168 * (1 - $value),
+    0,
+    0,
+    0.272 - 0.272 * (1 - $value),
+    0.534 - 0.534 * (1 - $value),
+    0.131 + 0.869 * (1 - $value),
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1
+  );
+}
+
+// Apply sepia filter
+// @param {Color} $color - Original color
+// @param {Percentage} $percentage - Filter amount
+// @return {Color}
+@function _sepia($color, $percentage) {
+  @return ColorFilter($color, get-sepia-matrix($percentage / 100 + 0%));
+}
+
+// Grayscale
+//
+// Create matrix
+// @param {value} $value - amount of filter
+// @return {List} - matrix
+@function get-grayscale-matrix($value) {
+  $value: strip-unit($value);
+
+  @return (
+    0.2126 + 0.7874 * (1 - $value),
+    0.7152 - 0.7152 * (1 - $value),
+    0.0722 - 0.0722 * (1 - $value),
+    0,
+    0,
+    0.2126 - 0.2126 * (1 - $value),
+    0.7152 + 0.2848 * (1 - $value),
+    0.0722 - 0.0722 * (1 - $value),
+    0,
+    0,
+    0.2126 - 0.2126 * (1 - $value),
+    0.7152 - 0.7152 * (1 - $value),
+    0.0722 + 0.9278 * (1 - $value),
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0
+  );
+}
+
+// Apply grayscale filter
+// @param {Color} $color - Original color
+// @param {Percentage} $percentage - Filter amount
+// @return {Color}
+@function _grayscale($color, $percentage) {
+  @return ColorFilter($color, get-grayscale-matrix($percentage / 100));
+}
+
+// Saturate
+//
+// Create matrix
+// @param {value} $value - amount of filter
+// @return {List} - matrix
+@function get-saturate-matrix($value) {
+  $value: strip-unit($value);
+
+  @return (
+    0.213 + 0.787 * $value,
+    0.715 - 0.715 * $value,
+    0.072 - 0.072 * $value,
+    0,
+    0,
+    0.213 - 0.213 * $value,
+    0.715 + 0.285 * $value,
+    0.072 - 0.072 * $value,
+    0,
+    0,
+    0.213 - 0.213 * $value,
+    0.715 - 0.715 * $value,
+    0.072 + 0.928 * $value,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0
+  );
+}
+
+// Apply saturate filter
+// @param {Color} $color - Original color
+// @param {Percentage} $percentage - Filter amount
+// @return {Color}
+@function _saturate($color, $percentage) {
+  @return ColorFilter($color, get-saturate-matrix($percentage / 100));
+}
+
+// Hue rotate
+//
+// Create matrix
+// @param {value} $value - amount of filter
+// @return {List} - matrix
+@function get-huerotate-matrix($angle) {
+  $sin: sin($angle);
+  $cos: cos($angle);
+
+  @return (
+    0.213 + $cos * 0.787 - $sin * 0.213,
+    0.715 - $cos * 0.715 - $sin * 0.715,
+    0.072 - $cos * 0.072 + $sin * 0.928,
+    0,
+    0,
+    0.213 - $cos * 0.213 + $sin * 0.143,
+    0.715 + $cos * 0.285 + $sin * 0.14,
+    0.072 - $cos * 0.072 - $sin * 0.283,
+    0,
+    0,
+    0.213 - $cos * 0.213 - $sin * 0.787,
+    0.715 - $cos * 0.715 + $sin * 0.715,
+    0.072 + $cos * 0.928 + $sin * 0.072,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0
+  );
+}
+
+// Apply rotate hue filter
+// @param {Color} $color - Original color
+// @param {Percentage} $percentage - Filter amount
+// @return {Color}
+@function _huerotate($color, $angle) {
+  @return ColorFilter($color, get-huerotate-matrix($angle));
+}
+
+// Calculate linear value
+// @param {Color} $color - Original color
+// @param {Number} $slope
+// @param {Number} $intersept
+// @return {Color}
+@function linear($color, $slope: 1, $intercept: 0) {
+  $red: clamp(red($color) * $slope + $intercept * 255, 0, 255);
+  $green: clamp(green($color) * $slope + $intercept * 255, 0, 255);
+  $blue: clamp(blue($color) * $slope + $intercept * 255, 0, 255);
+
+  @return rgb(round($red), round($green), round($blue));
+}
+// Brightness
+//
+// Apply brigtness filter
+// @param {Color} $color - Original color
+// @param {Percentage} $percentage - Filter amount
+// @return {Function}
+@function _brightness($color, $percentage) {
+  @return linear($color, $percentage / 100%);
+}
+// Contrast
+//
+// Apply contrast filter
+// @param {Color} $color - Original color
+// @param {Percentage} $percentage - Filter amount
+// @return {Function}
+@function _contrast($color, $percentage) {
+  @return linear($color, $percentage / 100%, -(0.5 * $percentage / 100%) + 0.5);
+}
+
+// Calculate loss - difference of reference color and color created with filters
+// @param {Color} $target-color
+// @param {Percentage | Degrees} $a, $b, $c, $d, $f - filter values
+// @return {Color}
+@function loss($target-color, $a, $b, $c, $d, $e, $f) {
+  $result-color: _contrast(
+    _brightness(
+      _huerotate(
+        _saturate(_sepia(_invert(rgb(0, 0, 0), $a), $b), $c),
+        $d * 3.6
+      ),
+      $e
+    ),
+    $f
+  );
+
+  $res: strip-unit(abs(red($result-color) - red($target-color))) +
+    strip-unit(abs(green($result-color) - green($target-color))) +
+    strip-unit(abs(blue($result-color) - blue($target-color))) +
+    strip-unit(abs(hue($result-color) - hue($target-color))) +
+    strip-unit(abs(saturation($result-color) - saturation($target-color))) +
+    strip-unit(abs(lightness($result-color) - lightness($target-color)));
+
+  @return to-fixed($res, 5);
+}
+
+// Adjust filter value
+// @param {Number} $value - Filter value
+// @param {Number} $idx - Index of filter in filters list
+// @return {Number}
+@function fix($value, $idx) {
+  $max: 100%;
+
+  @if $idx == 3 {
+    $max: 7500%;
+  } @else {
+    @if $idx == 5 or $idx == 6 {
+      $max: 200%;
+    }
+  }
+
+  @if $idx == 4 {
+    $max: 100deg;
+
+    @if $value > $max {
+      $value: remainder($value, $max);
+    } @else if $value < 0 {
+      $value: $max + remainder($value, $max);
+    }
+  } @else if($value < 0) {
+    $value: 0%;
+  } @else if($value > $max) {
+    $value: $max;
+  }
+
+  @return $value;
+}
+
+// Run SPSA algorithm to calculate filter values
+// @param {Color} $color - target color
+// @param {Number} $loss-target - minimum loss value, if it reached the algorithm stops
+// @return {Map}
+@function spsa($A, $a, $c, $values, $iters, $color, $loss-target: 0) {
+  // consts
+  $alpha: 1;
+  $gamma: 0.16666666666666666;
+  $best: null;
+  $best-loss: 10000;
+  $deltas: 0, 0, 0, 0, 0, 0;
+  $high-args: 0%, 0%, 0%, 0%, 0%, 0%;
+  $low-args: 0%, 0%, 0%, 0%, 0%, 0%;
+
+  @for $k from 1 through $iters {
+    $ck: $c / pow($k, $gamma);
+
+    @for $i from 1 through 6 {
+      $random: random();
+      $delta: if($random > 0.5, 1, -1);
+
+      $deltas: replace-nth($deltas, $i, $delta);
+
+      $high-args: replace-nth($high-args, $i, nth($values, $i) + $ck * $delta);
+
+      $low-args: replace-nth($low-args, $i, nth($values, $i) - $ck * $delta);
+    }
+
+    $loss-diff: loss($color, $high-args...) - loss($color, $low-args...);
+
+    @for $j from 1 through 6 {
+      $g: $loss-diff / (2 * $ck) * nth($deltas, $j);
+      $ak: nth($a, $j) / pow($A + $k, $alpha);
+      $new-val: fix(nth($values, $j) - $ak * $g, $j);
+
+      $values: replace-nth($values, $j, $new-val);
+    }
+
+    $loss: loss($color, $values...);
+
+    @if ($loss < $best-loss) {
+      $best: $values;
+      $best-loss: $loss;
+    }
+
+    @if $best-loss < $loss-target {
+      @return (values: $best, loss: $best-loss);
+    }
+  }
+
+  @return (values: $best, loss: $best-loss);
+}
+
+// Solve the color - wide stage
+// @param {Color} $color - target color
+// @return {Map}
+@function solve-wide($color) {
+  $A: 5;
+  $c: 15;
+  $a: (60, 180, 18000, 600, 1.2, 1.2);
+  $best-loss: 10000;
+  $best-vals: 0, 0, 0, 0, 0, 0;
+
+  @for $i from 1 through 3 {
+    @if $best-loss > 25 {
+      $initial: (50%, 20%, 3750%, 50deg, 100%, 100%);
+      $result: spsa($A, $a, $c, $initial, 1000, $color, 1);
+
+      @if (map-get($result, "loss")) < $best-loss {
+        $best-loss: map-get($result, "loss");
+        $best-vals: map-get($result, "values");
+      }
+    }
+
+    @return (values: $best-vals, loss: $best-loss);
+  }
+}
+
+// Solve the color - narrow stage
+// @param {Color} $color - target color
+// @param {Map} $wide-result - target color
+// @return {Map}
+@function solve-narrow($color, $wide-result) {
+  @if map-get($wide-result, "loss") < 1 {
+    @return $wide-result;
+  }
+  $A: map-get($wide-result, "loss");
+  $c: 2;
+  $A1: $A + 1;
+  $a: 0.25 * $A1, 0.25 * $A1, $A1, 0.25 * $A1, 0.2 * $A1, 0.2 * $A1;
+  $result: spsa($A, $a, $c, map-get($wide-result, "values"), 500, $color, 1);
+
+  @return $result;
+}
+
+// Insert values into CSS string
+// @param {List} $filters
+// @return {String}
+@function css($filters) {
+  @return unquote(
+    "brightness(0) saturate(100%) invert(#{round(nth($filters, 1))}) sepia(#{round(nth($filters, 2))}) saturate(#{round(nth($filters, 3))}) hue-rotate(#{round(nth($filters, 4) * 3.6)}) brightness(#{round(nth($filters, 5))}) contrast(#{round(nth($filters, 6))})"
+  );
+}
+
+// Main solving function
+// @param {Color} $color - target color
+// @return {Map}
+@function solve($color) {
+	// check if argument is valid
+	@if type-of($color) != "color" {
+		@error "Color to filter function requires a valid color to be passed as argument"
+	}
+  //check if value cached already
+  @if map-has-key($colorfilters, $color) {
+    // Value exist in cache
+    @return map-get($colorfilters, $color);
+  } @else {
+    @warn "Calculating filters for color #{$color}. \A Please be patient, it can take up to couple of minutes";
+  }
+
+  $wide: solve-wide($color);
+  $narrow: solve-narrow($color, $wide);
+
+  $loss: map-get($narrow, "loss");
+  $css-string: css(map-get($narrow, "values"));
+
+  @if $loss > 20 {
+    @warn "Color to filter calculatoion for color #{$color} finished with loss #{round($loss)}. This is too high, and will cause significant difference from target color. Consider running it again to update the value.";
+  } @else {
+    // Add to cache
+    $colorfilters: map-merge(
+      $colorfilters,
+      (
+        $color: $css-string,
+      )
+    ) !global;
+  }
+  @return $css-string;
+}
+
+// Public mixin wrapper
+// @param {Color} $color - target color
+// @return {String}
+@mixin color-to-filter($color) {
+  filter: solve($color);
+}

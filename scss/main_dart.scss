@@ -1,0 +1,24 @@
+@use "abstracts/cached-vars" as *; // import cached data
+@use "abstracts/colorfilter_dart" as *;
+
+/// Usage example.
+.test {
+	@include color-to-filter(#ffcc88);
+	@include color-to-filter(#accc88);
+	color: blue;
+}
+
+
+
+/// Export cached data.
+/// Keep this at the very end. 
+/// Add variables for caching: add it to $exportvars map like this: "variable_name_for_export": $variable
+$exportvars: (
+	"colorfilters": $colorfilters,
+);
+
+@export {
+	@each $varname, $var in $exportvars {
+		#{"$" + $varname}: unquote(inspect($var));
+	}
+}

@@ -1,0 +1,9 @@
+{
+  "plugins": {
+		"postcss-extract": { 
+			"extract": {
+				"export": "scss/abstracts/_cached-vars.scss"
+			}
+		}
+	}
+}

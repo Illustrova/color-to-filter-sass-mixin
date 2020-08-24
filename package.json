@@ -1,0 +1,27 @@
+{
+	"name": "color-to-filter-sass-mixin",
+	"version": "1.0.0",
+	"description": "Sass mixin generates set of css filters to emulate look of given color ",
+	"main": "index.js",
+	"scripts": {
+		"css:build": "npm run css:compile && npm run css:process",
+		"css:build:dartsass": "npm run css:compile:dartsass && npm run css:process",
+		"css:watch": "npm run css:cache:clear && onchange 'scss/**/*.scss' -e 'scss/abstracts/_cached-vars.scss' -- npm run css:build",
+		"css:watch:dartsass": "npm run css:cache:clear && onchange 'scss/**/*.scss' -e 'scss/abstracts/_cached-vars.scss' -- npm run css:build:dartsass",
+		"css:compile": "node-sass scss/main.scss css/main.css --include-path node_modules",
+		"css:compile:dartsass": "sass scss/main_dart.scss css/main.css --load-path node_modules",
+		"css:process": "./node_modules/.bin/postcss css/main.css -o css/main.css",
+		"css:cache:clear": "rm -f scss/abstracts/_cached-vars.scss && touch scss/abstracts/_cached-vars.scss"
+	},
+	"author": "Irina Illustrova",
+	"license": "MIT",
+	"devDependencies": {
+		"mathsass": "^0.11.0",
+		"node-sass": "^4.14.1",
+		"onchange": "^7.0.2",
+		"postcss": "^7.0.32",
+		"postcss-cli": "^7.1.1",
+		"postcss-extract": "^1.1.1",
+		"sass": "^1.26.10"
+	}
+}
